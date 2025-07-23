@@ -1,32 +1,89 @@
-// server.js
 import express from 'express';
-import cors from 'cors';
 import mongoose from 'mongoose';
-import Post from '../models/Post';
-import Like from '../models/Like';
+import cors from 'cors';
+import Post from './models/Post.js';
+import Like from './models/Like.js';
 
 const app = express();
-const PORT =  5000;
-
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// MongoDB Connection
-mongoose.connect('mongodb+srv://<db_username>:<db_password>@cluster0.gmrrjw4.mongodb.net/', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(() => console.log('Connected to MongoDB'))
-.catch(err => console.error('MongoDB connection error:', err));
-
-// Example route
-app.get('/', (req, res) => {
-  res.send('API is running...');
+// Create a post
+app.post('/posts', async (req, res) => {
+  const { post_str_id, content } = req.body;
+  try {
+    const post = new Post({ post_str_id, content });
+    await post.save();
+    res.json({ post_str_id, status: 'created' });
+  } catch (err) {
+    res.status(400).json({ error: 'Post creation failed' });
+  }
 });
 
-app.delete
-// Start the server
-app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
+// Like a post
+app.post('/posts/:post_str_id/like', async (req, res) => {
+  const { user_id_str } = req.body;
+  const { post_str_id } = req.params;
+  const post = await Post.findOne({ post_str_id });
+  if (!post) return res.status(404).json({ error: 'Post not found' });
+
+  try {
+    const like = new Like({ post_str_id, user_id_str });
+    await like.save();
+    res.json({ status: 'liked' });
+  } catch (err) {
+    if (err.code === 11000) {
+      res.json({ status: 'already_liked' });
+    } else {
+      res.status(500).json({ error: 'Something went wrong' });
+    }
+  }
 });
+
+// Get like count of a post
+app.get('/posts/:post_str_id/likes', async (req, res) => {
+  const { post_str_id } = req.params;
+  const post = await Post.findOne({ post_str_id });
+  if (!post) return res.status(404).json({ error: 'Post not found' });
+
+  const count = await Like.countDocuments({ post_str_id });
+  res.json({ post_str_id, like_count: count });
+});
+
+// Unlike a post
+app.delete('/posts/:post_str_id/like', async (req, res) => {
+  const { user_id_str } = req.body;
+  const { post_str_id } = req.params;
+
+  const result = await Like.findOneAndDelete({ post_str_id, user_id_str });
+  if (result) res.json({ status: 'unliked' });
+  else res.json({ status: 'not_liked_previously' });
+});
+
+// Get top N liked posts
+app.get('/posts/top', async (req, res) => {
+  const limit = parseInt(req.query.limit) || 5;
+  const topPosts = await Like.aggregate([
+    { $group: { _id: "$post_str_id", like_count: { $sum: 1 } } },
+    { $sort: { like_count: -1 } },
+    { $limit: limit },
+    { $project: { _id: 0, post_str_id: "$_id", like_count: 1 } }
+  ]);
+  res.json(topPosts);
+});
+
+//Get posts liked by a user
+app.get('/users/:user_id_str/liked-posts', async (req, res) => {
+  const { user_id_str } = req.params;
+  const likes = await Like.find({ user_id_str }).select('post_str_id -_id');
+  const likedPosts = likes.map(like => like.post_str_id);
+  res.json(likedPosts);
+});
+
+//Start the server
+const PORT = 5000;
+mongoose.connect('mongodb://127.0.0.1:27017/social_likes')
+  .then(() => {
+    app.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
+  })
+  .catch(err => console.error('MongoDB connection failed:', err));
